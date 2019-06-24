@@ -4,50 +4,21 @@ import datetime
 import json
 import os
 import requests
-import socket
 import sys
 import textwrap
 import time
 import traceback
 import urllib3
+import json,urllib.request
+import time
+import shutil
 
 urllib3.disable_warnings()
 
 
 def log_print(*msg, file=sys.stdout):
-    print(datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S'), *msg, file=file)
-
-
-class SimpleLineProtocol:
-    def __init__(self, sock):
-        self.socket = sock
-        self.buffer = b''
-
-    def write(self, msg):
-        msg = msg.strip()
-        msg += '\n'
-        self.socket.sendall(msg.encode())
-
-    def read_line(self):
-        while b'\n' not in self.buffer:
-            d = self.socket.recv(1024)
-            if not d:
-                raise socket.error()
-            self.buffer = self.buffer + d
-
-        i = self.buffer.find(b'\n')
-        line = self.buffer[:i]
-        self.buffer = self.buffer[i:].lstrip()
-        return line
-
-    def read_json_line(self):
-        raw_lines = []
-        line = b''
-        while b'{' not in line and b'}' not in line:
-            line = self.read_line()
-            raw_lines.append(line)
-        json_data = json.loads(line[line.find(b'{'):].decode())
-        return json_data, raw_lines
+    print(msg)
+    # print(datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S'), *msg, file=file)
 
 
 def layer_changed(timelapse_folder, webcam_url, webcam_http_auth, webcam_https_verify):
@@ -68,43 +39,70 @@ def firmware_monitor(snapshot_folder, duet_host, webcam_url, webcam_http_auth, w
 
     while True:
         try:
-            log_print("Connecting to {}...".format(duet_host))
-            sock = socket.create_connection((duet_host, 23), timeout=10)
-            time.sleep(4.5)  # RepRapFirmware uses a 4-second ignore period after connecting
-            conn = SimpleLineProtocol(sock)
-            log_print("Connection established.")
-
             timelapse_folder = None
+            lastLayer = -1
+            image_count = 0
+            fileName = ''
+            startTime = time.time()
 
             while True:
-                conn.write('M408')
-                json_data, raw_lines = conn.read_json_line()
-                status = json_data['status']
+                data = json.loads(urllib.request.urlopen(duet_host + "/rr_status?type=1").read().decode("utf-8"))
+                status = data['status']
+                currentLayer = data['currentlayer'];
+
+                log_print(data);
+
+                runTime = time.time() - startTime;
+                if runTime > 5 and runTime < 40:
+                    status = 'P'
 
                 if status == 'P' and not timelapse_folder:
-                    # a print is running, but we don't know the filename yet
-                    conn.write('M36')
-                    json_data, raw_lines = conn.read_json_line()
-                    log_print("Print started:", json_data)
-                    gcode_filename = os.path.basename(json_data['fileName'])
-                    current_log_print = "{}-{}".format(datetime.datetime.now().strftime("%Y-%m-%d"),
+                    # fileInfo = json.loads(urllib.request.urlopen(duet_host + "/rr_fileinfo").read().decode("utf-8"))
+                    # fileName = fileInfo['fileName']
+                    fileName = 'SampleName'
+
+                    # log_print("Print started:", fileInfo)
+                    gcode_filename = os.path.basename(fileName)
+                    current_log_print = "images/{}-{}".format(datetime.datetime.now().strftime("%Y-%m-%d"),
                                                        os.path.splitext(gcode_filename)[0])
                     timelapse_folder = os.path.expanduser(snapshot_folder)
                     timelapse_folder = os.path.abspath(os.path.join(timelapse_folder, current_log_print))
                     os.makedirs(timelapse_folder, exist_ok=True)
                     log_print("New timelapse folder created: {}{}".format(timelapse_folder, os.path.sep))
                     log_print("Waiting for layer changes...")
+
                 if status == 'I' and timelapse_folder:
-                    # a previous print finished and we need to reset and wait for a new print to start
+                    result = 0
+
+                    if (image_count > 5):
+                        log_print("\nCreating video...\n")
+                        #result = os.system('avconv -framerate 30 -i ' + dir + '/image%05d.jpg -vf format=yuv420p -b:v 5000k ' + 'movies/' + dateStr + '.mp4')
+                        now = datetime.datetime.now()
+                        outname = snapshot_folder + "/" + fileName + "-" + now.strftime("%Y%m%dT%H%M%S") + ".mp4"
+                        result = os.system('ffmpeg -framerate 30 -y -pattern_type glob -i \'' + timelapse_folder + '/*.jpg\' -c:v libx264 -vf format=yuv420p -b:v 5000k ' + outname)
+
+                        if result == 0:
+                            log_print("\nSuccess! New movie is " + outname + "\n")
+                            shutil.rmtree(timelapse_folder);
+                    else:
+                        log_print("\nMovie too short - canceling\n")
+                        shutil.rmtree(timelapse_folder);
+
                     timelapse_folder = None
+                    fileName = ''
+                    lastLayer = -1
+                    image_count = 0
                     log_print("Print finished.")
 
                 if timelapse_folder:
-                    for line in raw_lines:
-                        if line.startswith(b"LAYER CHANGE"):
-                            layer_changed(timelapse_folder, webcam_url, webcam_http_auth, webcam_https_verify)
+                    if currentLayer != lastLayer:
+                        layer_changed(timelapse_folder, webcam_url, webcam_http_auth, webcam_https_verify)
+                        image_count = image_count+1
 
-                time.sleep(1)
+                # lastLayer = currentLayer
+                lastLayer = currentLayer - 1
+                time.sleep(5)
+
         except Exception as e:
             log_print('ERROR', e, file=sys.stderr)
             traceback.print_exc()
@@ -121,17 +119,8 @@ if __name__ == "__main__":
             Take snapshot pictures of your DuetWifi/DuetEthernet log_printer on every layer change.
             A new subfolder will be created with a timestamp and g-code filename for every new log_print.
 
-            This script connects via Telnet to your log_printer, make sure to enable it in your config.g:
-                M586 P2 S1 ; enable Telnet
-
-            You need to inject the following G-Code before a new layer starts:
-                M400 ; wait for all movement to complete
-                M118 P4 S"LAYER CHANGE" ; take a picture
-                G4 P500 ; wait a bit
-
-            If you are using Cura, you can use the TimelapseLayerChange.py script with the Cura Post-Processing plugin.
-            If you are using Simplify3D, you can enter the above commands in the "Layer Change Script" section of your process.
-            Slicer-generated z-hops might cause erronously taken pictures, use firmware-retraction with z-hop instead.
+            This script connects via HTTP to get printer status
+            It watches the z axis to see when layers change
 
             After the print is done, use ffmpeg to render a timelapse movie:
                 $ ffmpeg -r 20 -y -pattern_type glob -i '*.jpg' -c:v libx264 output.mp4
@@ -147,8 +136,16 @@ if __name__ == "__main__":
         sys.exit(1)
 
     snapshot_folder = sys.argv[1]
-    duet_host = sys.argv[2]
-    webcam_url = sys.argv[3]
+
+    if len(sys.argv) >= 3:
+        duet_host = sys.argv[2]
+    else:
+        duet_host = 'http://192.168.7.250'
+
+    if len(sys.argv) >= 4:
+        webcam_url = sys.argv[3]
+    else:
+        webcam_url = 'http://hypercam.local:8080/?action=snapshot'
 
     webcam_http_auth = None
     if len(sys.argv) >= 5:
@@ -158,6 +155,8 @@ if __name__ == "__main__":
     for arg in sys.argv:
         if arg == '--no-verify':
             webcam_https_verify = False
+
+    log_print('Start Timelapse System')
 
     firmware_monitor(
         snapshot_folder=snapshot_folder,
