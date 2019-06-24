@@ -12,13 +12,14 @@ import urllib3
 import json,urllib.request
 import time
 import shutil
+import RPi.GPIO as GPIO
 
 urllib3.disable_warnings()
 
 
 def log_print(*msg, file=sys.stdout):
-    print(msg)
-    # print(datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S'), *msg, file=file)
+    # print(msg)
+    print(datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S'), *msg, file=file)
 
 
 def layer_changed(timelapse_folder, webcam_url, webcam_http_auth, webcam_https_verify):
@@ -33,6 +34,11 @@ def layer_changed(timelapse_folder, webcam_url, webcam_http_auth, webcam_https_v
     else:
         log_print('Failed to get timelapse snapshot.', file=sys.stderr)
 
+def set_active_light(enabled):
+    if enabled:
+        GPIO.output(17, GPIO.HIGH)
+    else:
+        GPIO.output(17, GPIO.LOW)
 
 def firmware_monitor(snapshot_folder, duet_host, webcam_url, webcam_http_auth, webcam_https_verify):
     # time.sleep(30)  # give devices time to boot and join the network
@@ -46,9 +52,9 @@ def firmware_monitor(snapshot_folder, duet_host, webcam_url, webcam_http_auth, w
             startTime = time.time()
 
             while True:
-                data = json.loads(urllib.request.urlopen(duet_host + "/rr_status?type=1").read().decode("utf-8"))
+                data = json.loads(urllib.request.urlopen(duet_host + "/rr_status?type=3").read().decode("utf-8"))
                 status = data['status']
-                currentLayer = data['currentlayer'];
+                currentLayer = data['currentLayer'];
 
                 log_print(data);
 
@@ -68,6 +74,7 @@ def firmware_monitor(snapshot_folder, duet_host, webcam_url, webcam_http_auth, w
                     timelapse_folder = os.path.expanduser(snapshot_folder)
                     timelapse_folder = os.path.abspath(os.path.join(timelapse_folder, current_log_print))
                     os.makedirs(timelapse_folder, exist_ok=True)
+                    set_active_light(True);
                     log_print("New timelapse folder created: {}{}".format(timelapse_folder, os.path.sep))
                     log_print("Waiting for layer changes...")
 
@@ -93,6 +100,9 @@ def firmware_monitor(snapshot_folder, duet_host, webcam_url, webcam_http_auth, w
                     lastLayer = -1
                     image_count = 0
                     log_print("Print finished.")
+
+                if status == 'I':
+                    set_active_light(False);
 
                 if timelapse_folder:
                     if currentLayer != lastLayer:
@@ -120,10 +130,8 @@ if __name__ == "__main__":
             A new subfolder will be created with a timestamp and g-code filename for every new log_print.
 
             This script connects via HTTP to get printer status
-            It watches the z axis to see when layers change
-
-            After the print is done, use ffmpeg to render a timelapse movie:
-                $ ffmpeg -r 20 -y -pattern_type glob -i '*.jpg' -c:v libx264 output.mp4
+            It watches the currentLayer to see when layers change
+            On completion it creates a movie and deletes the still images
 
             Usage: ./timelapse.py <folder> <duet_host> <webcam_url> [<auth>] [--no-verify]
 
@@ -135,17 +143,12 @@ if __name__ == "__main__":
               """).lstrip().rstrip(), file=sys.stderr)
         sys.exit(1)
 
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setup(17, GPIO.OUT)
+
     snapshot_folder = sys.argv[1]
-
-    if len(sys.argv) >= 3:
-        duet_host = sys.argv[2]
-    else:
-        duet_host = 'http://192.168.7.250'
-
-    if len(sys.argv) >= 4:
-        webcam_url = sys.argv[3]
-    else:
-        webcam_url = 'http://hypercam.local:8080/?action=snapshot'
+    duet_host = sys.argv[2]
+    webcam_url = sys.argv[3]
 
     webcam_http_auth = None
     if len(sys.argv) >= 5:

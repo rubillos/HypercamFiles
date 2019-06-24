@@ -4,5 +4,5 @@
 
 cd /
 cd /home/pi/Duet-timelapse
-sudo python3 timelapse.py '/home/pi/timelapse-movies'
+sudo python3 timelapse.py '/home/pi/timelapse-movies' 'http://192.168.7.250' 'http://hypercam.local:8080/?action=snapshot'
 cd /
