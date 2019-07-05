@@ -22,7 +22,7 @@
 
 ## Usage
 ```
-Take snapshot pictures of your DuetWifi/DuetEthernet printer on every increasing change in the z-axis.
+Take snapshot pictures of your DuetWifi/DuetEthernet printer on each layer change.
 Snapshots are taken during a print. On completion ffmpeg is used to make a movie. The snapshots are then deleted.
 Sends an SMS via Twilio and an email with the final snapshot of the print.
 Controls an LED connected to a GPIO pin to indicate status:
