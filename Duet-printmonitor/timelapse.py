@@ -91,7 +91,7 @@ def firmware_monitor():
     while True:
         try:
             timelapse_folder = None
-            lastZ = -1
+            lastLayer = -1
             image_count = 0
             gcode_filename = ''
             startTime = time.time()
@@ -100,7 +100,7 @@ def firmware_monitor():
             while True:
                 data = json.loads(urllib.urlopen(duet_host + "/rr_status?type=3").read().decode("utf-8"))
                 status = data['status']
-                currentZ = data['coords']['xyz'][2]
+                currentLayer = data['currentLayer']
 
                 # log_print(data);
 
@@ -151,7 +151,7 @@ def firmware_monitor():
                         shutil.rmtree(timelapse_folder);
 
                     timelapse_folder = None
-                    lastZ = -1
+                    lastLayer = -1
                     last_picture_path = ''
                     image_count = 0
                     log_print("Print finished.")
@@ -160,12 +160,12 @@ def firmware_monitor():
                     set_active_light(False);
 
                 if timelapse_folder:
-                    if currentZ > lastZ:
+                    if currentLayer > lastLayer:
                         last_picture_path = layer_changed(timelapse_folder, webcam_url)
                         image_count = image_count+1
 
-                # lastZ = currentZ - 1
-                lastZ = currentZ
+                # lastLayer = currentLayer - 1
+                lastLayer = currentLayer
                 time.sleep(printer_status_delay)
 
         except Exception as e:
