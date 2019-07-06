@@ -27,20 +27,28 @@ import PIL.Image as Image
 
 from settings import *
 
-client = Client(twilio_account_sid, twilio_auth_token)
+debugging = False
+
+twilio_client = None
+pwm_channel = None
+
+if send_twilio_sms:
+    twilio_client = Client(twilio_account_sid, twilio_auth_token)
 
 def log_print(*msg):
     print(msg)
-    # print(datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S'), *msg, sys.stderr)
+    # print(current_time_string(), *msg, sys.stderr)
+
+def current_time_string():
+    return datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
 
 def layer_changed(timelapse_folder, webcam_url):
     r = requests.get(webcam_url)
     if r.status_code == 200:
-        now = datetime.datetime.now()
-        set_active_light(False);
+        set_active_light(False)
         time.sleep(0.25)
-        set_active_light(True);
-        picPath = os.path.join(timelapse_folder, now.strftime("%Y%m%dT%H%M%S") + ".jpg")
+        set_active_light(True)
+        picPath = os.path.join(timelapse_folder, current_time_string() + ".jpg")
         with open(picPath, 'wb') as f:
             for chunk in r:
                 f.write(chunk)
@@ -52,45 +60,77 @@ def layer_changed(timelapse_folder, webcam_url):
         return ""
 
 def set_active_light(enabled):
+    pwm_channel = None
     if enabled:
         GPIO.output(led_pin, GPIO.HIGH)
     else:
         GPIO.output(led_pin, GPIO.LOW)
 
 def blink_error(waitTime):
-    p = GPIO.PWM(led_pin, 20)
-    p.start(50)
+    pwm_channel = None
+    pwm_channel = GPIO.PWM(led_pin, 20)
+    pwm_channel.start(50)
     time.sleep(waitTime)
-    p.stop()
+    pwm_channel.stop()
+    pwm_channel = None
     set_active_light(False)
 
 def send_email(subject, msgText, picPath):
-    msg = MIMEMultipart()
-    msg['Subject'] = subject
-    msg['From'] = sender_from
-    msg['To'] = receiver_email
+    if send_email:
+        msg = MIMEMultipart()
+        msg['Subject'] = subject
+        msg['From'] = sender_from
+        msg['To'] = receiver_email
 
-    msg.attach(MIMEText(msgText))
+        msg.attach(MIMEText(msgText))
 
-    part = MIMEBase('application', "octet-stream")
-    part.set_payload(open(picPath, "rb").read())
-    encoders.encode_base64(part)
-    part.add_header('Content-Disposition', 'attachment; filename="lastimage.jpg"')   # File name and format name
-    msg.attach(part)
+        part = MIMEBase('application', "octet-stream")
+        part.set_payload(open(picPath, "rb").read())
+        encoders.encode_base64(part)
+        part.add_header('Content-Disposition', 'attachment; filename="lastimage.jpg"')   # File name and format name
+        msg.attach(part)
 
-    sslcontext = ssl.create_default_context()
-    server = smtplib.SMTP_SSL(smtp_server, smtp_port, sslcontext)
-    server.login(sender_email, sender_password)
-    server.sendmail(sender_email, receiver_email, msg.as_string())
-    server.quit()
+        sslcontext = ssl.create_default_context()
+        server = smtplib.SMTP_SSL(smtp_server, smtp_port, sslcontext)
+        server.login(sender_email, sender_password)
+        server.sendmail(sender_email, receiver_email, msg.as_string())
+        server.quit()
 
 def send_sms(msgBody):
-    client.messages.create(from_=twilio_from_number, to=twilio_to_number, body=msgBody)
+    if twilio_client:
+        twilio_client.messages.create(from_=twilio_from_number, to=twilio_to_number, body=msgBody)
+
+def make_a_movie(output_filename, source_folder, elapsed_time, last_picture_path):
+    if create_movie:
+        log_print("Creating video...")
+        pwm_channel = None
+        pwm_channel = GPIO.PWM(led_pin, 4.0)
+        pwm_channel.start(20)
+        outname = snapshot_folder + "/" + output_filename + "-" + current_time_string() + ".mp4"
+        system_command = 'ffmpeg -y -framerate 30 -pattern_type glob -i \'' + source_folder + '/*.jpg\' ' + encoding_options + ' \'' + outname + '\''
+        log_print(system_command)
+        result = os.system(system_command)
+
+        if result == 0:
+            log_print("Success! New movie is " + outname)
+
+            msgBody = printer_name + " job complete: " + output_filename + "\nTotal print time: " + str(datetime.timedelta(seconds = elapsed_time)) + "\n\n"
+            send_sms(msgBody)
+            send_email(printer_name, msgBody, last_picture_path)
+            log_print(msgBody)
+            shutil.rmtree(source_folder)
+
+        pwm_channel.stop()
+        pwm_channel = None
 
 def firmware_monitor():
+    have_ever_connected = False
+
     while True:
         try:
+            current_session = None
             timelapse_folder = None
+            currentLayer = -1
             lastLayer = -1
             image_count = 0
             gcode_filename = ''
@@ -98,88 +138,103 @@ def firmware_monitor():
             last_picture_path = ""
 
             while True:
-                data = json.loads(urllib.urlopen(duet_host + "/rr_status?type=3").read().decode("utf-8"))
-                status = data['status']
-                currentLayer = data['currentLayer']
+                status = "I"
 
-                # log_print(data);
+                if not current_session:
+                    current_session = requests.Session()
+                    request = requests.Request("GET", duet_host + "/rr_connect?password=''&time=" + current_time_string())
+                    prepared = current_session.prepare_request(request)
+                    response = current_session.send(prepared)
+                    if response.status_code == 200 and response.json()['err'] == 0:
+                        have_ever_connected = True
+                    else:
+                        current_session.close()
+                        current_session = None
 
-                # runTime = time.time() - startTime
-                # if runTime > 5 and runTime < 40:
-                #     status = 'P'
+                if current_session:
+                    request = requests.Request("GET", duet_host + "/rr_status?type=3")
+                    prepared = current_session.prepare_request(request)
+                    response = current_session.send(prepared)
+                    if response.status_code == 200:
+                        data = response.json()
+                        status = data['status']
+                        currentLayer = data['currentLayer']
+                        # log_print(data)
+
+                if debugging:
+                    runTime = time.time() - startTime
+                    if runTime > 3 and image_count <= minimum_image_count:
+                        status = 'P'
 
                 if status == 'P' and not timelapse_folder:
-                    fileInfo = json.loads(urllib.urlopen(duet_host + "/rr_fileinfo").read().decode("utf-8"))
-                    fileName = fileInfo['fileName']
-                    # fileName = 'SampleName'
-                    startTime = time.time()
+                    if debugging:
+                        fileName = 'SampleName'
+                    else:
+                        request = requests.Request("GET", duet_host + "/rr_fileinfo")
+                        prepared = current_session.prepare_request(request)
+                        response = current_session.send(prepared)
+                        if response.status_code == 200:
+                            fileInfo = response.json()
+                            fileName = fileInfo['fileName']
+                            startTime = time.time()
+                        else:
+                            raise Exception("Error getting file name of current print. Aborting.")
 
                     gcode_filename = os.path.splitext(os.path.basename(fileName))[0]
-                    current_log_print = "images/{}-{}".format(datetime.datetime.now().strftime("%Y-%m-%d-%h-%m-%s"), gcode_filename)
+                    current_print_folder = "images/{}-{}".format(current_time_string(), gcode_filename)
                     timelapse_folder = os.path.expanduser(snapshot_folder)
-                    timelapse_folder = os.path.abspath(os.path.join(timelapse_folder, current_log_print))
+                    timelapse_folder = os.path.abspath(os.path.join(timelapse_folder, current_print_folder))
                     os.makedirs(timelapse_folder)
-                    set_active_light(True);
+                    set_active_light(True)
                     log_print("New timelapse folder created: {}{}".format(timelapse_folder, os.path.sep))
                     log_print("Waiting for layer changes...")
 
                 if status == 'I' and timelapse_folder:
-                    result = 0
-
-                    if (image_count > minimum_image_count):
-                        log_print("\nCreating video...\n")
-                        now = datetime.datetime.now()
-                        p = GPIO.PWM(led_pin, 4.0)
-                        p.start(20)
-                        outname = snapshot_folder + "/" + gcode_filename + "-" + now.strftime("%Y%m%dT%H%M%S") + ".mp4"
-                        result = os.system('ffmpeg -y -pattern_type glob -i \'' + timelapse_folder + '/*.jpg\' ' + encoding_options + ' ' + outname)
-
-                        if result == 0:
-                            log_print("\nSuccess! New movie is " + outname + "\n")
-
-                            printTime = long(time.time() - startTime)
-                            msgBody = printer_name + " job complete: " + gcode_filename + "\nTotal print time: " + str(datetime.timedelta(seconds = printTime)) + "\n\n"
-                            send_sms(msgBody)
-                            send_email(printer_name, msgBody, last_picture_path)
-                            log_print(msgBody)
-                            shutil.rmtree(timelapse_folder);
-
-                        p.stop()
-
-                    else:
-                        log_print("\nMovie too short - canceling\n")
-                        shutil.rmtree(timelapse_folder);
+                    if create_movie:
+                        if image_count > minimum_image_count or debugging:
+                            make_a_movie(gcode_filename, timelapse_folder, long(time.time() - startTime), last_picture_path)
+                        else:
+                            log_print("Movie too short - canceling")
+                            shutil.rmtree(timelapse_folder)
 
                     timelapse_folder = None
                     lastLayer = -1
                     last_picture_path = ''
-                    image_count = 0
+                    if not debugging:
+                        image_count = 0
                     log_print("Print finished.")
 
                 if status == 'I':
-                    set_active_light(False);
+                    set_active_light(False)
 
                 if timelapse_folder:
                     if currentLayer > lastLayer:
                         last_picture_path = layer_changed(timelapse_folder, webcam_url)
                         image_count = image_count+1
 
-                # lastLayer = currentLayer - 1
-                lastLayer = currentLayer
-                time.sleep(printer_status_delay)
+                if debugging:
+                    lastLayer = currentLayer - 1
+                    if status == 'I' or image_count > minimum_image_count:
+                        time.sleep(printer_status_delay)
+                else:
+                    lastLayer = currentLayer
+                    time.sleep(printer_status_delay)
 
         except Exception as e:
             # log_print('ERROR', e)
             traceback.print_exc()
 
-        log_print("Sleeping for a bit...")
-        blink_error(15)
-
+        if have_ever_connected:
+            log_print("Exception occured. Will try again after delay...")
+            blink_error(15)
+        else:
+            log_print("Unable to connect to printer. Will try again after delay...")
+            time.sleep(5)
 
 ################################################################################
 
 if __name__ == "__main__":
-    streamer = None;
+    streamer = None
 
     try:
         log_print('Start Timelapse System')
@@ -188,6 +243,11 @@ if __name__ == "__main__":
         GPIO.setup(led_pin, GPIO.OUT)
         set_active_light(False)
         streamer = Popen('sh launch-streamer.sh', shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE)
+
+        if not debugging:
+            log_print('Delay while printer starts up...')
+            time.sleep(initial_wait)
+
         firmware_monitor()
 
     except KeyboardInterrupt:
