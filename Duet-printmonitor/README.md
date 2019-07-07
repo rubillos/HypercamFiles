@@ -18,7 +18,7 @@
       - sudo apt-get install ffmpeg
       - sudo pip install ffmpeg
   * Add this line to the end of "crontab -e"
-      @reboot sh /home/pi/Duet-printmonitor/launch-timelapse.sh
+      @reboot python /home/pi/Duet-printmonitor/timelapse.py
 
 ## Usage
 ```
@@ -32,6 +32,6 @@ Controls an LED connected to a GPIO pin to indicate status:
   Flashes quickly for 15 seconds if an error occurs
 
 Modify the lines in the file settings.py to set Duet ip address, destination folder, etc.
-This script connects via HTTP to your printer
+This script connects via Telnet to your printer
 
-Usage: sh /home/pi/Duet-printmonitor/launch-timelapse.sh
+Usage: python /home/pi/Duet-printmonitor/timelapse.py

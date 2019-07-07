@@ -4,6 +4,7 @@ import datetime
 import json
 import os
 import requests
+import socket
 import sys
 import textwrap
 import time
@@ -38,6 +39,35 @@ if send_twilio_sms:
 def log_print(*msg):
     print(msg)
     # print(current_time_string(), *msg, sys.stderr)
+
+class SimpleLineProtocol:
+    def __init__(self, sock):
+        self.socket = sock
+        self.buffer = b''
+
+    def write(self, msg):
+        msg = msg.strip()
+        msg += '\n'
+        self.socket.sendall(msg.encode())
+
+    def read_line(self):
+        while b'\n' not in self.buffer:
+            d = self.socket.recv(1024)
+            if not d:
+                raise socket.error()
+            self.buffer = self.buffer + d
+
+        i = self.buffer.find(b'\n')
+        line = self.buffer[:i]
+        self.buffer = self.buffer[i:].lstrip()
+        return line
+
+    def read_json_line(self):
+        line = b''
+        while b'{' not in line and b'}' not in line:
+            line = self.read_line()
+        json_data = json.loads(line[line.find(b'{'):].decode())
+        return json_data
 
 def current_time_string():
     return datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
@@ -124,11 +154,17 @@ def make_a_movie(output_filename, source_folder, elapsed_time, last_picture_path
         pwm_channel = None
 
 def firmware_monitor():
-    have_ever_connected = False
+    sock = None
+    conn = None
 
     while True:
         try:
-            current_session = None
+            log_print("Connecting to {}...".format(duet_host))
+            sock = socket.create_connection((duet_host, 23), timeout=10)
+            time.sleep(4.5)  # RepRapFirmware uses a 4-second ignore period after connecting
+            conn = SimpleLineProtocol(sock)
+            log_print("Connection established.")
+
             timelapse_folder = None
             currentLayer = -1
             lastLayer = -1
@@ -140,46 +176,31 @@ def firmware_monitor():
             while True:
                 status = "I"
 
-                if not current_session:
-                    current_session = requests.Session()
-                    request = requests.Request("GET", duet_host + "/rr_connect?password=''&time=" + current_time_string())
-                    prepared = current_session.prepare_request(request)
-                    response = current_session.send(prepared)
-                    if response.status_code == 200 and response.json()['err'] == 0:
-                        have_ever_connected = True
-                    else:
-                        current_session.close()
-                        current_session = None
-
-                if current_session:
-                    request = requests.Request("GET", duet_host + "/rr_status?type=3")
-                    prepared = current_session.prepare_request(request)
-                    response = current_session.send(prepared)
-                    if response.status_code == 200:
-                        data = response.json()
-                        status = data['status']
-                        currentLayer = data['currentLayer']
-                        # log_print(data)
+                conn.write('M408 S4')
+                data = conn.read_json_line()
 
                 if debugging:
                     runTime = time.time() - startTime
                     if runTime > 3 and image_count <= minimum_image_count:
-                        status = 'P'
+                        data['status'] = 'P'
+                        data['currentLayer'] = data['currentLayer'] + 1
+
+                status = data['status']
+                currentLayer = data['currentLayer']
+
+                log_print("Printer status: " + status)
+                # log_print(data)
 
                 if status == 'P' and not timelapse_folder:
-                    if debugging:
-                        fileName = 'SampleName'
-                    else:
-                        request = requests.Request("GET", duet_host + "/rr_fileinfo")
-                        prepared = current_session.prepare_request(request)
-                        response = current_session.send(prepared)
-                        if response.status_code == 200:
-                            fileInfo = response.json()
-                            fileName = fileInfo['fileName']
-                            startTime = time.time()
-                        else:
-                            raise Exception("Error getting file name of current print. Aborting.")
+                    conn.write('M36')
+                    fileInfo = conn.read_json_line()
 
+                    if debugging:
+                        fileInfo['fileName'] = 'SampleName'
+                    else:
+                        startTime = time.time()
+
+                    fileName = fileInfo['fileName']
                     gcode_filename = os.path.splitext(os.path.basename(fileName))[0]
                     current_print_folder = "images/{}-{}".format(current_time_string(), gcode_filename)
                     timelapse_folder = os.path.expanduser(snapshot_folder)
@@ -224,11 +245,14 @@ def firmware_monitor():
             # log_print('ERROR', e)
             traceback.print_exc()
 
-        if have_ever_connected:
-            log_print("Exception occured. Will try again after delay...")
+        if sock:
+            log_print("Exception occured. Will restart after 15 seconds...")
             blink_error(15)
+            sock.close()
+            sock = None
+            conn = None
         else:
-            log_print("Unable to connect to printer. Will try again after delay...")
+            log_print("Unable to connect to printer. Will try again in 5 seconds...")
             time.sleep(5)
 
 ################################################################################
@@ -242,7 +266,8 @@ if __name__ == "__main__":
         GPIO.setmode(GPIO.BCM)
         GPIO.setup(led_pin, GPIO.OUT)
         set_active_light(False)
-        streamer = Popen('sh launch-streamer.sh', shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE)
+
+        streamer = Popen(start_mjpg_streamer, shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, cwd = mjpg_streamer_folder)
 
         if not debugging:
             log_print('Delay while printer starts up...')
