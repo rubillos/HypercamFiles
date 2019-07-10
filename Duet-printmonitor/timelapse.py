@@ -275,7 +275,11 @@ if __name__ == "__main__":
 
         firmware_monitor()
 
+    except Exception as e:
+        traceback.print_exc()
+
     except KeyboardInterrupt:
         pass
     finally:
-        streamer.kill()
+        if streamer:
+            streamer.kill()
