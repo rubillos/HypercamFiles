@@ -32,6 +32,7 @@ debugging = False
 
 twilio_client = None
 pwm_channel = None
+crop_table = None
 
 if send_twilio_sms:
     twilio_client = Client(twilio_account_sid, twilio_auth_token)
@@ -39,6 +40,33 @@ if send_twilio_sms:
 def log_print(*msg):
     print(msg)
     # print(current_time_string(), *msg, sys.stderr)
+
+class InterpolatedArray(object):
+  def __init__(self, points):
+    self.points = sorted(points)
+
+  def __getitem__(self, x):
+    if x < self.points[0][0]:
+        return self.points[0][1]
+    elif x >= self.points[-1][0]:
+        return self.points[-1][1]
+    else:
+        lower_point, upper_point = self._GetBoundingPoints(x)
+        return self._Interpolate(x, lower_point, upper_point)
+
+  def _GetBoundingPoints(self, x):
+    lower_point = None
+    upper_point = self.points[0]
+    for point  in self.points[1:]:
+      lower_point = upper_point
+      upper_point = point
+      if x <= upper_point[0]:
+        break
+    return lower_point, upper_point
+
+  def _Interpolate(self, x, lower_point, upper_point):
+    slope = (float(upper_point[1] - lower_point[1]) / (upper_point[0] - lower_point[0]))
+    return lower_point[1] + (slope * (x - lower_point[0]))
 
 class SimpleLineProtocol:
     def __init__(self, sock):
@@ -130,14 +158,19 @@ def send_sms(msgBody):
     if twilio_client:
         twilio_client.messages.create(from_=twilio_from_number, to=twilio_to_number, body=msgBody)
 
-def make_a_movie(output_filename, source_folder, elapsed_time, last_picture_path):
+def make_a_movie(output_filename, source_folder, elapsed_time, last_picture_path, currentZ):
     if create_movie:
         log_print("Creating video...")
+        if not crop_table:
+            crop_table = InterpolatedArray(crop_factors)
+
         pwm_channel = None
         pwm_channel = GPIO.PWM(led_pin, 4.0)
         pwm_channel.start(20)
         outname = snapshot_folder + "/" + output_filename + "-" + current_time_string() + ".mp4"
-        system_command = 'ffmpeg -y -framerate 30 -pattern_type glob -i \'' + source_folder + '/*.jpg\' ' + encoding_options + ' \'' + outname + '\''
+        crop_factor = crop_table[currentZ]
+        crop_options = " -vf \'crop=y=0:h=in_h*" + str(crop_factor) + "\'"
+        system_command = 'ffmpeg -y -framerate 30 -pattern_type glob -i \'' + source_folder + '/*.jpg\' ' + encoding_options + crop_options + ' \'' + outname + '\''
         log_print(system_command)
         result = os.system(system_command)
 
@@ -161,12 +194,13 @@ def firmware_monitor():
         try:
             log_print("Connecting to {}...".format(duet_host))
             sock = socket.create_connection((duet_host, 23), timeout=10)
+            log_print("Connection established. Pausing for firmware...")
             time.sleep(4.5)  # RepRapFirmware uses a 4-second ignore period after connecting
             conn = SimpleLineProtocol(sock)
-            log_print("Connection established.")
 
             timelapse_folder = None
             currentLayer = -1
+            currentZ = 0
             lastLayer = -1
             image_count = 0
             gcode_filename = ''
@@ -184,9 +218,16 @@ def firmware_monitor():
                     if runTime > 3 and image_count <= minimum_image_count:
                         data['status'] = 'P'
                         data['currentLayer'] = data['currentLayer'] + 1
+                        data['coords']['xyz'][2] = data['currentLayer'] * 0.2
 
                 status = data['status']
                 currentLayer = data['currentLayer']
+                curentZ = data['coords']['xyz'][2]
+
+                if status == 'I' and not timelapse_folder:
+                    set_active_light(True)
+                    time.sleep(0.003)
+                    set_active_light(False)
 
                 log_print("Printer status: " + status)
                 # log_print(data)
@@ -213,7 +254,7 @@ def firmware_monitor():
                 if status == 'I' and timelapse_folder:
                     if create_movie:
                         if image_count > minimum_image_count or debugging:
-                            make_a_movie(gcode_filename, timelapse_folder, long(time.time() - startTime), last_picture_path)
+                            make_a_movie(gcode_filename, timelapse_folder, long(time.time() - startTime), last_picture_path, currentZ)
                         else:
                             log_print("Movie too short - canceling")
                             shutil.rmtree(timelapse_folder)
@@ -247,7 +288,8 @@ def firmware_monitor():
 
         if sock:
             log_print("Exception occured. Will restart after 15 seconds...")
-            blink_error(15)
+            blink_error(5)
+            time.sleep(10)
             sock.close()
             sock = None
             conn = None
