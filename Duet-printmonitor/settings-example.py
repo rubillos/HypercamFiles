@@ -18,6 +18,9 @@ webcam_url = "http://127.0.0.1:8080/?action=snapshot" # url for retrieving image
 create_movie = True
 encoding_options = "-c:v h264_omx -vf format=yuv420p -b:v 15000k" # use hardware encoding, max 15MB/s
 
+# Array of z heights and crop factors (from the top of frame) to be processed using FFMPEG
+crop_factors = ((0, 0.23), (50, 0.45), (100, 0.74), (200, 0.82), (300, 1.0))
+
 send_twilio_sms = True
 twilio_account_sid = "acccount-sid-goes-here"
 twilio_auth_token  = "twilio-auth-token-goes-here"
