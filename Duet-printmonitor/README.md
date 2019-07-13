@@ -31,6 +31,7 @@ Controls an LED connected to a GPIO pin to indicate status:
   Flashes slowly during movie encoding
   Flashes quickly for 15 seconds if an error occurs
 
+Rename the file settings-example.py to settings.py
 Modify the lines in the file settings.py to set Duet ip address, destination folder, etc.
 This script connects via Telnet to your printer
 
