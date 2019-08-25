@@ -111,10 +111,14 @@ def layer_changed(timelapse_folder, webcam_url):
             for chunk in r:
                 f.write(chunk)
 
-        log_print("Picture taken and saved to disk.")
+        if debugging:
+            log_print("Picture taken and saved to disk.")
+
         return picPath
     else:
-        log_print('Failed to get timelapse snapshot.')
+        if debugging:
+            log_print('Failed to get timelapse snapshot.')
+
         return ""
 
 def set_active_light(enabled):
@@ -229,8 +233,9 @@ def firmware_monitor():
                     time.sleep(0.003)
                     set_active_light(False)
 
-                log_print("Printer status: " + status)
-                # log_print(data)
+                if debugging:
+                    log_print("Printer status: " + status)
+                    # log_print(data)
 
                 if status == 'P' and not timelapse_folder:
                     conn.write('M36')
