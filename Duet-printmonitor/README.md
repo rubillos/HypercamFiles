@@ -18,7 +18,7 @@
       - sudo apt-get install ffmpeg
       - sudo pip install ffmpeg
   * Add this line to the end of "crontab -e"
-      @reboot python /home/pi/Duet-printmonitor/timelapse.py
+      @reboot python -u /home/pi/Duet-printmonitor/timelapse.py &>> /home/pi/Duet-printmonitor/logfile.log
 
 ## Usage
 ```
