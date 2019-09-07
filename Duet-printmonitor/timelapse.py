@@ -32,7 +32,6 @@ debugging = False
 
 twilio_client = None
 pwm_channel = None
-crop_table = None
 
 if send_twilio_sms:
     twilio_client = Client(twilio_account_sid, twilio_auth_token)
@@ -121,20 +120,28 @@ def layer_changed(timelapse_folder, webcam_url):
 
         return ""
 
+def clear_pwm():
+    global pwm_channel
+
+    if pwm_channel != None:
+        pwm_channel.stop()
+        pwm_channel = None
+
 def set_active_light(enabled):
-    pwm_channel = None
+    clear_pwm()
     if enabled:
         GPIO.output(led_pin, GPIO.HIGH)
     else:
         GPIO.output(led_pin, GPIO.LOW)
 
 def blink_error(waitTime):
-    pwm_channel = None
+    global pwm_channel
+
+    clear_pwm()
     pwm_channel = GPIO.PWM(led_pin, 20)
     pwm_channel.start(50)
     time.sleep(waitTime)
-    pwm_channel.stop()
-    pwm_channel = None
+    clear_pwm()
     set_active_light(False)
 
 def send_email(subject, msgText, picPath):
@@ -163,12 +170,12 @@ def send_sms(msgBody):
         twilio_client.messages.create(from_=twilio_from_number, to=twilio_to_number, body=msgBody)
 
 def make_a_movie(output_filename, source_folder, elapsed_time, last_picture_path, currentZ):
-    if create_movie:
-        log_print("Creating video...")
-        if not crop_table:
-            crop_table = InterpolatedArray(crop_factors)
+    global pwm_channel
 
-        pwm_channel = None
+    if create_movie:
+        log_print("Creating video... (total height =" + str(currentZ) + "mm)")
+        crop_table = InterpolatedArray(crop_factors)
+        clear_pwm()
         pwm_channel = GPIO.PWM(led_pin, 4.0)
         pwm_channel.start(20)
         outname = snapshot_folder + "/" + output_filename + "-" + current_time_string() + ".mp4"
@@ -187,8 +194,7 @@ def make_a_movie(output_filename, source_folder, elapsed_time, last_picture_path
             log_print(msgBody)
             shutil.rmtree(source_folder)
 
-        pwm_channel.stop()
-        pwm_channel = None
+        clear_pwm()
 
 def firmware_monitor():
     sock = None
@@ -196,100 +202,115 @@ def firmware_monitor():
 
     while True:
         try:
-            log_print("Connecting to {}...".format(duet_host))
-            sock = socket.create_connection((duet_host, 23), timeout=10)
-            log_print("Connection established. Pausing for firmware...")
-            time.sleep(4.5)  # RepRapFirmware uses a 4-second ignore period after connecting
-            conn = SimpleLineProtocol(sock)
+            if not sock:
+                try:
+                    if debugging:
+                        log_print("Connecting to {}...".format(duet_host))
+                    sock = socket.create_connection((duet_host, 23), timeout=10)
+                except:
+                    sock = None
 
-            timelapse_folder = None
-            currentLayer = -1
-            currentZ = 0
-            lastLayer = -1
-            image_count = 0
-            gcode_filename = ''
-            startTime = time.time()
-            last_picture_path = ""
+            if sock:
+                log_print("Connection established. Pausing for firmware...")
+                time.sleep(4.5)  # RepRapFirmware uses a 4-second ignore period after connecting
+                conn = SimpleLineProtocol(sock)
 
-            while True:
-                status = "I"
+                timelapse_folder = None
+                currentLayer = -1
+                currentZ = 0
+                lastLayer = -1
+                image_count = 0
+                gcode_filename = ''
+                startTime = time.time()
+                last_picture_path = ""
 
-                conn.write('M408 S4')
-                data = conn.read_json_line()
+                while sock:
+                    status = "I"
 
-                if debugging:
-                    runTime = time.time() - startTime
-                    if runTime > 3 and image_count <= minimum_image_count:
-                        data['status'] = 'P'
-                        data['currentLayer'] = data['currentLayer'] + 1
-                        data['coords']['xyz'][2] = data['currentLayer'] * 0.2
+                    try:
+                        conn.write('M408 S4')
+                        data = conn.read_json_line()
 
-                status = data['status']
-                currentLayer = data['currentLayer']
-                curentZ = data['coords']['xyz'][2]
+                        if debugging:
+                            runTime = time.time() - startTime
+                            if runTime > 3 and image_count <= minimum_image_count:
+                                data['status'] = 'P'
+                                data['currentLayer'] = data['currentLayer'] + 1
+                                data['coords']['xyz'][2] = data['currentLayer'] * 0.2
 
-                if status == 'I' and not timelapse_folder:
-                    set_active_light(True)
-                    time.sleep(0.003)
-                    set_active_light(False)
+                        status = data['status']
+                        currentLayer = data['currentLayer']
+                        curentZ = data['coords']['xyz'][2]
 
-                if debugging:
-                    log_print("Printer status: " + status)
-                    # log_print(data)
+                    except:
+                        sock.close()
+                        sock = None
+                        conn = None
 
-                if status == 'P' and not timelapse_folder:
-                    conn.write('M36')
-                    fileInfo = conn.read_json_line()
+                    if status == 'I' and not timelapse_folder:
+                        set_active_light(True)
+                        time.sleep(0.003)
+                        set_active_light(False)
 
                     if debugging:
-                        fileInfo['fileName'] = 'SampleName'
-                    else:
-                        startTime = time.time()
+                        log_print("Printer status: " + status)
+                        # log_print(data)
 
-                    fileName = fileInfo['fileName']
-                    gcode_filename = os.path.splitext(os.path.basename(fileName))[0]
-                    current_print_folder = "images/{}-{}".format(current_time_string(), gcode_filename)
-                    timelapse_folder = os.path.expanduser(snapshot_folder)
-                    timelapse_folder = os.path.abspath(os.path.join(timelapse_folder, current_print_folder))
-                    os.makedirs(timelapse_folder)
-                    set_active_light(True)
-                    log_print("New timelapse folder created: {}{}".format(timelapse_folder, os.path.sep))
-                    log_print("Waiting for layer changes...")
+                    if status == 'P' and not timelapse_folder:
+                        conn.write('M36')
+                        fileInfo = conn.read_json_line()
 
-                if status == 'I' and timelapse_folder:
-                    if create_movie:
-                        if image_count > minimum_image_count or debugging:
-                            make_a_movie(gcode_filename, timelapse_folder, long(time.time() - startTime), last_picture_path, currentZ)
+                        if debugging:
+                            fileInfo['fileName'] = 'SampleName'
                         else:
-                            log_print("Movie too short - canceling")
-                            shutil.rmtree(timelapse_folder)
+                            startTime = time.time()
 
-                    timelapse_folder = None
-                    lastLayer = -1
-                    last_picture_path = ''
-                    if not debugging:
-                        image_count = 0
-                    log_print("Print finished.")
+                        fileName = fileInfo['fileName']
+                        gcode_filename = os.path.splitext(os.path.basename(fileName))[0]
+                        current_print_folder = "images/{}-{}".format(current_time_string(), gcode_filename)
+                        timelapse_folder = os.path.expanduser(snapshot_folder)
+                        timelapse_folder = os.path.abspath(os.path.join(timelapse_folder, current_print_folder))
+                        os.makedirs(timelapse_folder)
+                        set_active_light(True)
+                        log_print("New timelapse folder created: {}{}".format(timelapse_folder, os.path.sep))
+                        log_print("Waiting for layer changes...")
 
-                if status == 'I':
-                    set_active_light(False)
+                    if status == 'I' and timelapse_folder:
+                        if create_movie:
+                            if image_count > minimum_image_count or debugging:
+                                make_a_movie(gcode_filename, timelapse_folder, long(time.time() - startTime), last_picture_path, currentZ)
+                            else:
+                                log_print("Movie too short - canceling")
+                                shutil.rmtree(timelapse_folder)
 
-                if timelapse_folder:
-                    if currentLayer > lastLayer:
-                        last_picture_path = layer_changed(timelapse_folder, webcam_url)
-                        image_count = image_count+1
+                        timelapse_folder = None
+                        lastLayer = -1
+                        last_picture_path = ''
+                        if not debugging:
+                            image_count = 0
+                        log_print("Print finished.")
 
-                if debugging:
-                    lastLayer = currentLayer - 1
-                    if status == 'I' or image_count > minimum_image_count:
+                    if status == 'I':
+                        set_active_light(False)
+
+                    if timelapse_folder:
+                        if currentLayer > lastLayer:
+                            last_picture_path = layer_changed(timelapse_folder, webcam_url)
+                            image_count = image_count+1
+
+                    if debugging:
+                        lastLayer = currentLayer - 1
+                        if status == 'I' or image_count > minimum_image_count:
+                            time.sleep(printer_status_delay)
+                    elif sock:
+                        lastLayer = currentLayer
                         time.sleep(printer_status_delay)
-                else:
-                    lastLayer = currentLayer
-                    time.sleep(printer_status_delay)
 
         except Exception as e:
             # log_print('ERROR', e)
             traceback.print_exc()
+
+        set_active_light(False)
 
         if sock:
             log_print("Exception occured. Will restart after 15 seconds...")
