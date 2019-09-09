@@ -240,7 +240,7 @@ def firmware_monitor():
 
                         status = data['status']
                         currentLayer = data['currentLayer']
-                        curentZ = data['coords']['xyz'][2]
+                        currentZ = data['coords']['xyz'][2]
 
                     except:
                         sock.close()
@@ -320,7 +320,8 @@ def firmware_monitor():
             sock = None
             conn = None
         else:
-            log_print("Unable to connect to printer. Will try again in 5 seconds...")
+            if debugging:
+                log_print("Unable to connect to printer. Will try again in 5 seconds...")
             time.sleep(5)
 
 ################################################################################
