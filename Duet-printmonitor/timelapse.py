@@ -218,6 +218,8 @@ def firmware_monitor():
                 timelapse_folder = None
                 currentLayer = -1
                 currentZ = 0
+                previousZ1 = 0
+                previousZ2 = 0
                 lastLayer = -1
                 image_count = 0
                 gcode_filename = ''
@@ -240,6 +242,8 @@ def firmware_monitor():
 
                         status = data['status']
                         currentLayer = data['currentLayer']
+                        previousZ2 = previousZ1
+                        previousZ1 = currentZ
                         currentZ = data['coords']['xyz'][2]
 
                     except:
@@ -278,7 +282,7 @@ def firmware_monitor():
                     if status == 'I' and timelapse_folder:
                         if create_movie:
                             if image_count > minimum_image_count or debugging:
-                                make_a_movie(gcode_filename, timelapse_folder, long(time.time() - startTime), last_picture_path, currentZ)
+                                make_a_movie(gcode_filename, timelapse_folder, long(time.time() - startTime), last_picture_path, previousZ2)
                             else:
                                 log_print("Movie too short - canceling")
                                 shutil.rmtree(timelapse_folder)
@@ -320,8 +324,8 @@ def firmware_monitor():
             sock = None
             conn = None
         else:
-            if debugging:
-                log_print("Unable to connect to printer. Will try again in 5 seconds...")
+            # if debugging:
+            #     log_print("Unable to connect to printer. Will try again in 5 seconds...")
             time.sleep(5)
 
 ################################################################################
