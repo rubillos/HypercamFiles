@@ -372,6 +372,8 @@ def firmware_monitor():
 						if message:
 							if message.startswith('sound:'):
 								play_sound(message[6:])
+							elif message.startswith('sms:'):
+								send_sms(message[4:].replace('|', '\n'))
 
 						if not new_data and not message and current_time >= next_status_time:
 							conn.write('M408 S4')
