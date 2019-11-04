@@ -17,8 +17,9 @@
       - sudo pip install Pillow
       - sudo apt-get install ffmpeg
       - sudo pip install ffmpeg
+			- sudo pip install pygame
   * Add this line to the end of "crontab -e"
-      @reboot python -u /home/pi/Duet-printmonitor/timelapse.py &>> /home/pi/Duet-printmonitor/logfile.log
+      @reboot python -u /home/pi/Duet-printmonitor/printmonitor.py &>> /home/pi/Duet-printmonitor/logfile.log
 
 ## Usage
 ```
